@@ -6,9 +6,17 @@ export const calculatePromptInputHeight = (
   return Math.min(max, Math.max(scrollHeight, min))
 }
 
-export const scrollToBottom = (e) => {
-  const element = document.getElementById("messages-container")
-  element.scrollTop = element.scrollHeight
+import cryptoServer from "crypto"
+export function getRandomUUID() {
+  if (typeof window === "undefined") {
+    return cryptoServer.randomBytes(16).toString("hex")
+  }
+  return crypto.randomUUID()
+}
+
+export const scrollToId = (id = "last-message") => {
+  const element = document.getElementById(id)
+  if (element) element.scrollIntoView()
 }
 
 export const copyToClipboard = (text) => {

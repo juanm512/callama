@@ -45,7 +45,8 @@ import {
   TooltipTrigger,
   TooltipProvider
 } from "@/components/ui/tooltip"
-import { useEffect, useRef, useState } from "react"
+import { use, useEffect, useState } from "react"
+import { generateChatCompletion, generateTitle } from "@/lib/utils/ollama"
 
 export default function InitialCheck() {
   return (
@@ -56,237 +57,290 @@ export default function InitialCheck() {
 }
 
 export function Dashboard() {
-  // 	//////////////////////////
-  // // Ollama functions
-  // //////////////////////////
+  const {
+    chatsMessages,
+    currentChatId,
+    changeCurrentChatId,
+    setChatTitle,
+    addChat,
+    addMsg,
+    updateMsg
+  } = useChatStore() as ChatStoreType
 
-  // const submitPrompt = async (userPrompt) => {
-  // 	console.log('submitPrompt', chatId);
-  // 	processing = "requesting"
+  const { prompt, changePrompt, changeLastPrompt } =
+    usePromptStore() as PromptStoreType
+  const {
+    status,
+    abortFlag,
+    controller: contr,
+    changeStatus,
+    setController,
+    changeAbortFlag
+  } = useBasicStore() as BasicStoreType
 
-  // 	if (messages.length != 0 && (messages.at(-1).done != true && messages.at(-1).error == false ) ) {
-  // 		// Response not done
-  // 		console.log('wait');
-  // 	} else {
-  // 		// Reset chat message textarea height
-  // 		document.getElementById('chat-textarea').style.height = '';
+  useEffect(() => {
+    try {
+      console.log(abortFlag, contr)
+      if (abortFlag && contr != null) contr.abort("User aborted request!")
+    } catch (error) {
+      console.error(error, abortFlag, contr)
+    }
+  }, [abortFlag, contr])
 
-  // 		// Create user message
-  // 		let userMessageId = uuidv4();
-  // 		let userMessage = {
-  // 			id: userMessageId,
-  // 			role: 'user',
-  // 			content: userPrompt,
-  // 			timestamp: Math.floor(Date.now() / 1000) // Unix epoch
-  // 		};
+  //////////////////////////
+  // Ollama functions
+  //////////////////////////
+  const submitPrompt = async (userPrompt: string) => {
+    changeAbortFlag(false)
+    console.log("submitPrompt", currentChatId)
+    changeLastPrompt(userPrompt)
+    changePrompt("")
+    changeStatus("REQUESTING")
+    const messages = chatsMessages[currentChatId]?.messages || []
+    const lastMsg: Message | undefined = messages.at(-1)
 
-  // 		// Add message to chatId messages
-  // 		messages.push(userMessage);
+    // console.log(messages)
+    if (
+      messages.length != 0 &&
+      status === 1 &&
+      lastMsg != undefined &&
+      lastMsg.done != true &&
+      lastMsg.error == false
+    ) {
+      // Response not done
+      console.log("wait, a message is pending or have an error")
+    } else {
+      // Create new chat if only one message in messages
+      let chatId = messages.length == 0 ? getRandomUUID() : currentChatId
+      const model = "gemma:2b"
+      if (messages.length == 0) {
+        const newChat = {
+          id: chatId,
+          title: "New Chat",
+          model,
+          // system: $settings.system ?? undefined,
+          // options: {
+          //   ...($settings.options ?? {})
+          // },
+          created_at: Date.now()
+        }
+        // console.log("new chat created: ", newChat)
+        addChat(newChat)
+        changeCurrentChatId(chatId)
+      }
 
-  // 		// Wait until messages have been updated
-  // 		await tick();
+      // Create user message
+      let userMessageId = getRandomUUID()
+      let userMessage: Message = {
+        id: userMessageId,
+        chatId: chatId,
+        role: "user",
+        content: userPrompt,
+        done: true,
+        error: false,
+        created_at: Math.floor(Date.now() / 1000) // Unix epoch
+      }
+      // Add message to chatId messages
+      addMsg(chatId, userMessage)
 
-  // 		// Create new chat if only one message in messages
-  // 		if (messages.length == 1) {
-  // 			const newChatId = uuidv4()
-  // 			chat = {
-  // 				id: newChatId,
-  // 				title: 'New Chat',
-  // 				model: "gemma:7b",
-  // 				system: $settings.system ?? undefined,
-  // 				options: {
-  // 					...($settings.options ?? {})
-  // 				},
-  // 				messages: messages,
-  // 				timestamp: Date.now()
-  // 			};
-  // 			chatId = newChatId;
-  // 			await tick();
-  // 		}
+      // Create response message
+      let responseMessageId = getRandomUUID()
+      let responseMessage: Message = {
+        id: responseMessageId,
+        chatId: chatId,
+        role: "assistant",
+        content: "",
+        done: false,
+        error: false,
+        created_at: Math.floor(Date.now() / 1000) // Unix epoch
+      }
+      addMsg(chatId, responseMessage)
 
-  // 		// Reset chat input textarea
-  // 		prompt = '';
+      await sendPromptOllama(prompt, responseMessageId, chatId, model)
+    }
+  }
 
-  // 		// Send prompt
-  // 		await sendPrompt(userPrompt, chatId);
-  // 	}
-  // };
+  const sendPromptOllama = async (
+    userPrompt: string,
+    responseMessageId: string,
+    _chatId: string,
+    _model: string
+  ) => {
+    const messages = chatsMessages[_chatId]?.messages
+    const responseMessageIndex = messages.findIndex(
+      (m) => m.id == responseMessageId
+    )
+    let responseMessage = chatsMessages[_chatId]?.messages[responseMessageIndex]
+    let controller = new AbortController()
+    setController(controller)
 
-  // const sendPrompt = async (prompt, _chatId) => {
-  // 	// Create response message
-  // 	let responseMessageId = uuidv4();
-  // 	let responseMessage = {
-  // 		id: responseMessageId,
-  // 		role: 'assistant',
-  // 		content: '',
-  // 		error: false,
-  // 		timestamp: Math.floor(Date.now() / 1000) // Unix epoch
-  // 	};
-  // 	messages.push(responseMessage);
+    // Scroll down
+    scrollToId()
 
-  // 	await sendPromptOllama(prompt, responseMessageId, _chatId);
-  // };
+    const messagesBody = [
+      // $settings.system
+      // 	? {
+      // 			role: 'system',
+      // 			content: $settings.system
+      // 	  }
+      // 	: undefined,
+      ...messages
+    ].slice(0, -1)
 
-  // const sendPromptOllama = async (userPrompt, responseMessageId, _chatId) => {
-  // 	const responseMessageIndex = messages.findIndex(m => m.id == responseMessageId)
-  // 	// Wait until history/message have been updated
-  // 	await tick();
-  // 	// Scroll down
-  // 	scrollToBottom();
+    const { res, error } = (await generateChatCompletion(
+      {
+        model: _model,
+        messages: messagesBody
+        // options: {
+        //   ...($settings.options ?? {})
+        // }
+      },
+      controller.signal
+    )) as {
+      res: Response | void
+      controller: AbortController
+      error: Error | null
+    }
 
-  // 	const messagesBody = [
-  // 		// $settings.system
-  // 		// 	? {
-  // 		// 			role: 'system',
-  // 		// 			content: $settings.system
-  // 		// 	  }
-  // 		// 	: undefined,
-  // 		...messages
-  // 	].slice(0, -1)
-  // 	await tick()
-  // 	console.log(chat, messages, messagesBody)
-  // 	const [res, controller, error] = await generateChatCompletion({
-  // 		model: chat.model,
-  // 		messages: messagesBody,
-  // 		options: {
-  // 			...($settings.options ?? {})
-  // 		},
-  // 	});
-  // 	processing = ""
+    // @ts-ignore
+    if (res && res.ok && error == null) {
+      // @ts-ignore
+      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
+      while (true) {
+        try {
+          const { value, done } = await reader.read()
+          console.log(abortFlag, controller)
+          if (
+            done ||
+            abortFlag ||
+            (currentChatId !== "" && _chatId !== currentChatId)
+          ) {
+            responseMessage.done = true
+            // if (abortFlag) {
+            //   // @ts-ignore
+            //   controller.abort("User: Stop Response")
+            //   console.log(
+            //     "SendPromptOllama ->>> controller.abort('User: Stop Response');"
+            //   )
+            // }
+            updateMsg(_chatId, responseMessage.id, responseMessage) //i think this is for save the chat into the current chat
+            break
+          }
+          let data = JSON.parse(
+            "[" + value.replaceAll("}\n{", "},{").replace("}\n", "}") + "]"
+          )
+          console.log(value, data)
+          data.forEach((element: any) => {
+            if (element.done == false) {
+              // update messages data of the response
+              responseMessage.content += element.message.content
+              updateMsg(_chatId, responseMessage.id, responseMessage)
+            } else {
+              // responseMessage.done = true
 
-  // 	if (res && res.ok && error == null) {
-  // 		console.log('controller', controller);
+              if (responseMessage.content == "") {
+                responseMessage.error = true
+                responseMessage.content =
+                  "Oops! No text generated from Ollama, Please try again."
+              }
 
-  // 		const reader = res.body
-  // 			.pipeThrough(new TextDecoderStream())
-  // 			.getReader();
+              responseMessage.context = element.context ?? null
+              responseMessage.info = {
+                total_duration: element.total_duration,
+                load_duration: element.load_duration,
+                sample_count: element.sample_count,
+                sample_duration: element.sample_duration,
+                prompt_eval_count: element.prompt_eval_count,
+                prompt_eval_duration: element.prompt_eval_duration,
+                eval_count: element.eval_count,
+                eval_duration: element.eval_duration
+              }
+              updateMsg(_chatId, responseMessage.id, responseMessage)
 
-  // 		while (true) {
-  // 			const { value, done } = await reader.read();
-  // 			if (done || stopResponseFlag || _chatId !== chatId) {
-  // 				messages[responseMessageIndex].done = true;
-  // 				// messages = messages; i think this is for save the chat into the current chat
-  // 				if (stopResponseFlag) {
-  // 					controller.abort('User: Stop Response');
-  // 					console.log("SendPromptOllama ->>> controller.abort('User: Stop Response');")
-  // 				}
-  // 				break;
-  // 			}
-  // 			try {
-  // 				let data = JSON.parse(value);
-  // 				console.log(data)
-  // 				if (data.done == false) {
-  // 					// update messages data of the response
-  // 					messages[responseMessageIndex].content+= data.message.content;
-  // 				} else {
-  // 					messages[responseMessageIndex].done = true;
+              // if ($settings.responseAutoCopy) {
+              //   copyToClipboard(responseMessage.content)
+              // }
+            }
+          })
+        } catch (error) {
+          console.log(error)
+          // @ts-ignore
+          responseMessage.context = error.message
+          responseMessage.error = true
+          responseMessage.done = true
+          messages[
+            responseMessageIndex
+          ].content = `Uh-oh! There was an issue connecting to Ollama.`
+          updateMsg(_chatId, responseMessage.id, responseMessage)
+          break
+        }
+      }
 
-  // 					if (messages[responseMessageIndex].content == '') {
-  // 						messages[responseMessageIndex].error = true;
-  // 						messages[responseMessageIndex].content =
-  // 							'Oops! No text generated from Ollama, Please try again.';
-  // 					}
+      updateMsg(_chatId, responseMessage.id, responseMessage)
+    } else {
+      if (res !== null && error) {
+        console.error(error.message)
+        responseMessage.context = error.message
+      } else {
+        console.error(res)
+        messages[
+          responseMessageIndex
+        ].content = `Uh-oh! There was an issue connecting to Ollama.`
+      }
 
-  // 					messages[responseMessageIndex].context = data.context ?? null;
-  // 					messages[responseMessageIndex].info = {
-  // 						total_duration: data.total_duration,
-  // 						load_duration: data.load_duration,
-  // 						sample_count: data.sample_count,
-  // 						sample_duration: data.sample_duration,
-  // 						prompt_eval_count: data.prompt_eval_count,
-  // 						prompt_eval_duration: data.prompt_eval_duration,
-  // 						eval_count: data.eval_count,
-  // 						eval_duration: data.eval_duration
-  // 					};
+      responseMessage.error = true
+      messages[
+        responseMessageIndex
+      ].content = `Uh-oh! There was an issue connecting to Ollama.`
+      responseMessage.done = true
+      updateMsg(_chatId, responseMessage.id, responseMessage)
+    }
 
-  // 					if ($settings.responseAutoCopy) {
-  // 						copyToClipboard(messages[responseMessageIndex].content);
-  // 					}
+    setController(null)
+    changeAbortFlag(false)
+    changeStatus("IDLE")
+    scrollToId()
 
-  // 				}
-  // 			} catch (error) {
-  // 				console.log(error);
-  // 				messages[responseMessageIndex].context = error.message;
-  // 				messages[responseMessageIndex].error = true;
-  // 				messages[responseMessageIndex].content = `Uh-oh! There was an issue connecting to Ollama.`;
-  // 				break;
-  // 			}
-
-  // 			if (autoScroll) {
-  // 				scrollToBottom();
-  // 			}
-  // 		}
-
-  // 		// guardar messages en el chat correspondiente
-  // 		if (chatId == _chatId) {
-  // 			chat.messages = [...messages]
-  // 			await tick()
-  // 			saveChatChanges()
-  // 		}
-  // 	} else {
-  // 		if (res !== null) {
-  // 			console.error(error.message);
-  // 			messages[responseMessageIndex].context = error.message;
-  // 		} else {
-  // 			console.error(res);
-  // 			messages[responseMessageIndex].content = `Uh-oh! There was an issue connecting to Ollama.`;
-  // 		}
-
-  // 		messages[responseMessageIndex].error = true;
-  // 		messages[responseMessageIndex].content = `Uh-oh! There was an issue connecting to Ollama.`;
-  // 		messages[responseMessageIndex].done = true;
-  // 	}
-
-  // 	stopResponseFlag = false;
-  // 	await tick();
-
-  // 	if (autoScroll) {
-  // 		scrollToBottom();
-  // 	}
-
-  // 	if (messages.length == 2 && messages.at(1).content !== '' && !messages.at(1).error ) {
-  // 		await generateChatTitle(_chatId, userPrompt);
-  // 	}
-  // };
-
-  // const stopResponse = () => {
-  // 	stopResponseFlag = true;
-  // 	console.log('stopResponse');
-  // };
+    const firstMsg = messages.at(1) // this line and the check for firstMsg is only a TS thing
+    if (
+      messages.length == 2 &&
+      firstMsg &&
+      firstMsg.content !== "" &&
+      !firstMsg.error
+    ) {
+      await generateChatTitle(_chatId, _model, userPrompt)
+    }
+  }
 
   // const regenerateResponse = async () => {
-  // 	console.log('regenerateResponse');
-  // 	if (messages.length != 0
-  // 	// && messages.at(-1).done == true
-  // 	) {
-  // 		messages.splice(messages.length - 1, 1);
+  //   console.log("regenerateResponse")
+  //   if (
+  //     messages.length != 0
+  //     // && messages.at(-1).done == true
+  //   ) {
+  //     messages.splice(messages.length - 1, 1)
 
-  // 		const userMessage = messages.at(-1);
-  // 		const userPrompt = userMessage.content;
+  //     const userMessage = messages.at(-1)
+  //     const userPrompt = userMessage.content
 
-  // 		await sendPrompt(userPrompt);
-  // 	}
-  // };
+  //     await sendPrompt(userPrompt)
+  //   }
+  // }
 
-  // /////////////////////////////////////////
-  // // Chat: update, create, save. Functions
-  // /////////////////////////////////////////
+  const generateChatTitle = async (
+    _chatId: string,
+    model: string,
+    userPrompt: string
+  ) => {
+    const title = await generateTitle(model, userPrompt)
 
-  // const generateChatTitle = async (_chatId, userPrompt) => {
-  // 	if ($settings.titleAutoGenerate ?? true) {
-  // 		const title = await generateTitle(
-  // 			chat.model,
-  // 			userPrompt
-  // 		);
+    if (title) {
+      setChatTitle(_chatId, title)
+    } else {
+      setChatTitle(_chatId, `${userPrompt}`)
+    }
+  }
 
-  // 		if (title) {
-  // 			await setChatTitle(_chatId, title);
-  // 		}
-  // 		console.log("TITLE GENERATED: ",title)
-  // 	} else {
-  // 		await setChatTitle(_chatId, `${userPrompt}`);
-  // 	}
-  // };
   return (
     <div className="grid h-screen w-full pl-[56px]">
       <aside className="inset-y fixed  left-0 z-20 flex h-full flex-col border-r">
@@ -722,29 +776,17 @@ export function Dashboard() {
               </fieldset>
             </form>
           </div> */}
-          <div className="relative flex h-full min-h-[50vh] flex-col rounded-xl bg-muted/50 p-4 lg:col-span-2">
+          <div className="relative flex h-full min-h-[50vh] flex-col rounded-xl p-4 lg:col-span-2">
             <Badge
               variant="outline"
-              className="absolute right-3 top-3"
+              className="fixed right-8 top-16"
             >
-              Output
+              abortFlag: {JSON.stringify(abortFlag)}
             </Badge>
-            <div className="flex-1 flex flex-col gap-16">
-              <p>fsdafsd</p>
-              <p>fsdafsd</p>
-              <p>fsdafsd</p>
-              <p>fsdafsd</p>
-              <p>fsdafsd</p>
-              <p>fsdafsd</p>
-              <p>fsdafsd</p>
-              <p>fsdafsd</p>
-              <p>fsdafsd</p>
-              <p>fsdafsd</p>
-              <p>fsdafsd</p>
-              <p>fsdafsd</p>
-              <p>fsdafsd</p>
+            <div className="flex-1 flex flex-col gap-16 pb-64">
+              <Messages />
             </div>
-            <Prompt />
+            <Prompt submitPrompt={submitPrompt} />
           </div>
         </main>
       </div>
@@ -752,11 +794,39 @@ export function Dashboard() {
   )
 }
 
-function Prompt() {
+import {
+  // useMessageStore,
+  // MessageStoreType,
+  useBasicStore,
+  BasicStoreType,
+  Message,
+  useChatStore,
+  ChatStoreType
+} from "@/lib/store/chat"
+function Messages() {
+  const { currentChatId, chatsMessages } = useChatStore() as ChatStoreType
+  const messages = chatsMessages[currentChatId]?.messages
+
+  if (!messages || messages?.length == 0) return <p>No hay mensajes aun</p>
+  return messages.map((msg, index) => {
+    if (messages.length - 1 == index)
+      return (
+        <p
+          id="last-message"
+          key={msg.id}
+        >
+          {msg.content}
+        </p>
+      )
+    else return <p key={msg.id}>{msg.content}</p>
+  })
+}
+
+function Prompt({ submitPrompt }) {
   return (
-    <div className="fixed ml-9 bottom-0 left-1/2 -translate-x-[50%] min-w-[10rem] sm:min-w-[30rem] md:min-w-[40rem] lg:min-w-[60rem] max-w-screen-lg">
-      <form className="relative overflow-hidden rounded-lg border bg-background focus-within:ring-1 focus-within:ring-ring">
-        <PromptArea />
+    <div className="fixed ml-9 bottom-2 left-1/2 -translate-x-[50%] min-w-[10rem] sm:min-w-[30rem] md:min-w-[40rem] lg:min-w-[60rem] max-w-screen-lg">
+      <div className="relative overflow-hidden rounded-lg border bg-background focus-within:ring-1 focus-within:ring-ring">
+        <PromptArea submitPrompt={submitPrompt} />
         <div className="flex items-center p-3 pt-2">
           <Tooltip>
             <TooltipTrigger asChild>
@@ -784,22 +854,28 @@ function Prompt() {
             </TooltipTrigger>
             <TooltipContent side="top">Use Microphone</TooltipContent>
           </Tooltip>
-          <SendPromptButton />
+          <SendPromptButton submitPrompt={submitPrompt} />
         </div>
-      </form>
-      <div className="mt-1.5 py-0.5 text-xs text-neutral-800 text-center bg-black/10 backdrop-blur-sm rounded-t-md">
-        LLMs can make mistakes. Verify important information.
       </div>
     </div>
   )
 }
 
-import { calculatePromptInputHeight } from "@/lib/utils/common"
+import {
+  calculatePromptInputHeight,
+  getRandomUUID,
+  scrollToId
+} from "@/lib/utils/common"
+import { PromptStoreType, usePromptStore } from "@/lib/store/chat"
 
-function PromptArea() {
-  const textareaRef = useRef(null)
-  const [prompt, setPrompt] = useState("")
+function PromptArea({ submitPrompt }) {
   const [minH, setMinH] = useState(100)
+
+  const { prompt, lastPrompt, changePrompt } =
+    usePromptStore() as PromptStoreType
+
+  const { status, controller, setController } =
+    useBasicStore() as BasicStoreType
 
   return (
     <>
@@ -810,11 +886,11 @@ function PromptArea() {
         Message
       </Label>
       <Textarea
-        ref={textareaRef}
         value={prompt}
         onChange={(e) => {
-          setPrompt(e.currentTarget.value)
-          console.log(e.currentTarget.scrollHeight)
+          // setPrompt(e.currentTarget.value)
+          changePrompt(e.currentTarget.value)
+
           setMinH(calculatePromptInputHeight(e.currentTarget.scrollHeight, 100))
         }}
         onPaste={(e) => {
@@ -824,26 +900,56 @@ function PromptArea() {
         onKeyDown={async (e) => {
           const isCtrlPressed = e.ctrlKey || e.metaKey // metaKey is for Cmd key on Mac
           const isAltPressed = e.altKey
+          const isShiftPressed = e.shiftKey
+
           // Check if Ctrl + Enter is pressed
           if (
             prompt !== "" &&
+            status === 0 &&
             e.key.toLowerCase() === "enter" &&
-            !e.shiftKey &&
+            !isShiftPressed &&
             !isAltPressed &&
             isCtrlPressed
           ) {
-            // submitPrompt(prompt)
+            submitPrompt(prompt)
             console.log("send prompt")
           }
 
           // Check if Ctrl + R is pressed
-          if (prompt === "" && isCtrlPressed && e.key.toLowerCase() === "r") {
+          if (
+            prompt === "" &&
+            status === 0 &&
+            isCtrlPressed &&
+            e.key.toLowerCase() === "r"
+          ) {
             e.preventDefault()
+
             console.log("regenerate")
           }
 
-          if (prompt === "" && e.key == "ArrowUp") {
+          if (
+            prompt === "" &&
+            status === 1 &&
+            isCtrlPressed &&
+            isShiftPressed &&
+            (e.key.toLowerCase() === "backspace" ||
+              e.key.toLowerCase() === "delete")
+          ) {
             e.preventDefault()
+            controller.abort()
+            setController(null)
+            console.log("cancel the request")
+          }
+
+          if (
+            prompt === "" &&
+            lastPrompt !== "" &&
+            e.key.toLowerCase() == "arrowup"
+          ) {
+            e.preventDefault()
+
+            changePrompt(lastPrompt)
+
             console.log("get last user prompt")
           }
 
@@ -902,20 +1008,31 @@ function PromptArea() {
   )
 }
 
-function SendPromptButton() {
-  const prompt = "fsd"
+function SendPromptButton({ submitPrompt }) {
+  const { status, changeAbortFlag } = useBasicStore() as BasicStoreType
 
-  const messages = []
+  const { prompt } = usePromptStore() as PromptStoreType
 
-  if (messages.length == 0 || messages.at(-1).done == true)
+  const { currentChatId, chatsMessages } = useChatStore() as ChatStoreType
+  const lastMsg = chatsMessages[currentChatId]?.messages.at(-1)
+
+  const stopResponse = () => {
+    changeAbortFlag(true)
+  }
+
+  if (
+    (status === 0 && chatsMessages[currentChatId]?.messages.length == 0) ||
+    !lastMsg ||
+    (lastMsg && lastMsg.done == true)
+  )
     return (
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
-            type="submit"
             size="sm"
             className="ml-auto gap-1.5"
             disabled={prompt === ""}
+            onClick={() => submitPrompt(prompt)}
           >
             Send Message
             <CornerDownLeft className="size-3.5" />
@@ -931,15 +1048,26 @@ function SendPromptButton() {
         </TooltipContent>
       </Tooltip>
     )
+  // else if (abortFlag === null)
+  //   return (
+  //     <Button
+  //       size="sm"
+  //       variant="ghost"
+  //       className="ml-auto gap-1.5"
+  //     >
+  //       Loading cancel
+  //       <CircleSlash className="size-3.5" />
+  //     </Button>
+  //   )
   else
     return (
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
-            type="submit"
             size="sm"
             variant="destructive"
             className="ml-auto gap-1.5"
+            onClick={() => stopResponse()}
           >
             Stop response
             <CircleSlash className="size-3.5" />
@@ -949,7 +1077,7 @@ function SendPromptButton() {
           <p className="text-sm text-muted-foreground">
             Press
             <kbd className="pointer-events-none inline-flex h-5 ml-1 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground opacity-100">
-              <span className="text-xs">⌘</span>Del
+              <span className="text-xs">⌘</span> + Shift + Del
             </kbd>
           </p>
         </TooltipContent>
